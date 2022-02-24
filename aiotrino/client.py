@@ -35,7 +35,9 @@ The main interface is :class:`TrinoQuery`: ::
 
 import copy
 import os
-from typing import Any, Dict, List, Optional, Text, Tuple, Union  # NOQA for mypy types
+import re
+from typing import Any, Dict, List, Optional, Tuple, Union
+import urllib.parse
 
 import aiohttp
 
@@ -43,7 +45,7 @@ import aiotrino.logging
 from aiotrino import constants, exceptions
 from aiotrino.transaction import NO_TRANSACTION
 
-__all__ = ["TrinoQuery", "TrinoRequest"]
+__all__ = ["TrinoQuery", "TrinoRequest", "PROXIES"]
 
 
 logger = aiotrino.logging.get_logger(__name__)
@@ -54,7 +56,9 @@ SOCKS_PROXY = os.environ.get("SOCKS_PROXY")
 if SOCKS_PROXY:
     PROXIES = {"http": "socks5://" + SOCKS_PROXY, "https": "socks5://" + SOCKS_PROXY}
 else:
-    PROXIES = None
+    PROXIES = {}
+
+_HEADER_EXTRA_CREDENTIAL_KEY_REGEX = re.compile(r'^\S[^\s=]*$')
 
 
 class ClientSession(object):
@@ -67,6 +71,7 @@ class ClientSession(object):
         properties=None,
         headers=None,
         transaction_id=None,
+        extra_credential=None,
     ):
         self.catalog = catalog
         self.schema = schema
@@ -77,6 +82,7 @@ class ClientSession(object):
         self._properties = properties
         self._headers = headers or {}
         self.transaction_id = transaction_id
+        self.extra_credential = extra_credential
 
     @property
     def properties(self):
@@ -93,7 +99,10 @@ def get_header_values(headers, header):
 
 def get_session_property_values(headers, header):
     kvs = get_header_values(headers, header)
-    return [(k.strip(), v.strip()) for k, v in (kv.split("=", 1) for kv in kvs)]
+    return [
+        (k.strip(), urllib.parse.unquote(v.strip()))
+        for k, v in (kv.split("=", 1) for kv in kvs)
+    ]
 
 
 def is_redirect(http_response) -> bool:
@@ -156,6 +165,8 @@ class TrinoRequest(object):
     :param http_scheme: "http" or "https"
     :param auth: class that manages user authentication. ``None`` means no
                  authentication.
+    :param extra_credential: extra credentials. as list of ``(key, value)``
+                             tuples.
     :max_attempts: maximum number of attempts when sending HTTP requests. An
                    attempt is an HTTP request. 5 attempts means 4 retries.
     :request_timeout: How long (in seconds) to wait for the server to send
@@ -197,25 +208,25 @@ class TrinoRequest(object):
 
     def __init__(
         self,
-        host,  # type: Text
-        port,  # type: int
-        user,  # type: Text
-        source=None,  # type: Text
-        catalog=None,  # type: Text
-        schema=None,  # type: Text
-        session_properties=None,  # type: Optional[Dict[Text, Any]]
-        http_session=None,  # type: aiohttp.ClientSession
-        http_headers=None,  # type: Optional[Dict[Text, Text]]
-        transaction_id=NO_TRANSACTION,  # type: Optional[Text]
-        http_scheme=constants.HTTP,  # type: Text
-        auth=constants.DEFAULT_AUTH,  # type: Optional[aiotrino.auth.Authentication]
-        redirect_handler=None,
-        max_attempts=MAX_ATTEMPTS,  # type: int
-        request_timeout=constants.DEFAULT_REQUEST_TIMEOUT,  # type: Union[float, Tuple[float, float]]
+        host: str,
+        port: int,
+        user: str,
+        source: str = None,
+        catalog: str = None,
+        schema: str = None,
+        session_properties: Optional[Dict[str, Any]] = None,
+        http_session: Any = None,
+        http_headers: Optional[Dict[str, str]] = None,
+        transaction_id: Optional[str] = NO_TRANSACTION,
+        http_scheme: str = None,
+        auth: Optional[Any] = constants.DEFAULT_AUTH,
+        extra_credential: Optional[List[Tuple[str, str]]] = None,
+        redirect_handler: Any = None,
+        max_attempts: int = MAX_ATTEMPTS,
+        request_timeout: Union[float, Tuple[float, float]] = constants.DEFAULT_REQUEST_TIMEOUT,
         handle_retry=exceptions.RetryWithExponentialBackoff(),
-        verify=True     # type: bool
-    ):
-        # type: (...) -> None
+        verify: bool = True
+    ) -> None:
         self._client_session = ClientSession(
             catalog,
             schema,
@@ -224,11 +235,20 @@ class TrinoRequest(object):
             session_properties,
             http_headers,
             transaction_id,
+            extra_credential,
         )
 
         self._host = host
         self._port = port
-        self._next_uri = None  # type: Optional[Text]
+        self._next_uri: Optional[str] = None
+
+        if http_scheme is None:
+            if self._port == constants.DEFAULT_TLS_PORT:
+                self._http_scheme = constants.HTTPS
+            else:
+                self._http_scheme = constants.HTTP
+        else:
+            self._http_scheme = http_scheme
 
         if http_session is not None:
             self._http_session = http_session
@@ -302,18 +322,17 @@ class TrinoRequest(object):
         self._client_session.transaction_id = value
 
     @property
-    def http_headers(self):
-        # type: () -> Dict[Text, Text]
+    def http_headers(self) -> Dict[str, str]:
         headers = {}
 
-        headers[constants.HEADERS.CATALOG] = self._client_session.catalog
-        headers[constants.HEADERS.SCHEMA] = self._client_session.schema
-        headers[constants.HEADERS.SOURCE] = self._client_session.source
-        headers[constants.HEADERS.USER] = self._client_session.user
+        headers[constants.HEADER_CATALOG] = self._client_session.catalog
+        headers[constants.HEADER_SCHEMA] = self._client_session.schema
+        headers[constants.HEADER_SOURCE] = self._client_session.source
+        headers[constants.HEADER_USER] = self._client_session.user
 
-        headers[constants.HEADERS.SESSION] = ",".join(
+        headers[constants.HEADER_SESSION] = ",".join(
             # ``name`` must not contain ``=``
-            "{}={}".format(name, value)
+            "{}={}".format(name, urllib.parse.quote(str(value)))
             for name, value in self._client_session.properties.items()
         )
 
@@ -324,18 +343,29 @@ class TrinoRequest(object):
         headers.update(self._client_session.headers)
 
         transaction_id = self._client_session.transaction_id
-        headers[constants.HEADERS.TRANSACTION] = transaction_id
+        headers[constants.HEADER_TRANSACTION] = transaction_id
+
+        if self._client_session.extra_credential is not None and \
+                len(self._client_session.extra_credential) > 0:
+
+            for tup in self._client_session.extra_credential:
+                self._verify_extra_credential(tup)
+
+            # HTTP 1.1 section 4.2 combine multiple extra credentials into a
+            # comma-separated value
+            # extra credential value is encoded per spec (application/x-www-form-urlencoded MIME format)
+            headers[constants.HEADER_EXTRA_CREDENTIAL] = \
+                ", ".join(
+                    [f"{tup[0]}={urllib.parse.quote_plus(tup[1])}" for tup in self._client_session.extra_credential])
 
         return {k: v for k, v in headers.items() if v is not None}
 
     @property
-    def max_attempts(self):
-        # type: () -> int
+    def max_attempts(self) -> int:
         return self._max_attempts
 
     @max_attempts.setter
-    def max_attempts(self, value):
-        # type: (int) -> None
+    def max_attempts(self, value) -> None:
         self._max_attempts = value
         if value == 1:  # No retry
             self._get = self._http_session.get
@@ -347,8 +377,9 @@ class TrinoRequest(object):
             self._handle_retry,
             exceptions=self._exceptions,
             conditions=(
-                # need retry when there is no exception but the status code is 503
-                lambda response: getattr(response, "status", None) == 503,
+                # need retry when there is no exception but the status code is 503 or 504
+                lambda response: getattr(response, "status", None)
+                in (503, 504),
             ),
             max_attempts=self._max_attempts,
         )
@@ -356,20 +387,17 @@ class TrinoRequest(object):
         self._post = with_retry(self._http_session.post)
         self._delete = with_retry(self._http_session.delete)
 
-    def get_url(self, path):
-        # type: (Text) -> Text
+    def get_url(self, path) -> str:
         return "{protocol}://{host}:{port}{path}".format(
             protocol=self._http_scheme, host=self._host, port=self._port, path=path
         )
 
     @property
-    def statement_url(self):
-        # type: () -> Text
+    def statement_url(self) -> str:
         return self.get_url(constants.URL_STATEMENT_PATH)
 
     @property
-    def next_uri(self):
-        # type: () -> Text
+    def next_uri(self) -> Optional[str]:
         return self._next_uri
 
     async def post(self, sql, additional_http_headers=None):
@@ -387,7 +415,7 @@ class TrinoRequest(object):
             headers=http_headers,
             timeout=self._request_timeout,
             allow_redirects=self._redirect_handler is None,
-            # TODO: proxies=PROXIES,
+            proxies=PROXIES,
         )
         if self._redirect_handler is not None:
             while http_response is not None and is_redirect(http_response):
@@ -400,7 +428,7 @@ class TrinoRequest(object):
                     headers=http_headers,
                     timeout=self._request_timeout,
                     allow_redirects=False,
-                    # TODO: proxies=PROXIES,
+                    proxies=PROXIES,
                 )
         return http_response
 
@@ -409,15 +437,11 @@ class TrinoRequest(object):
             url,
             headers=self.http_headers,
             timeout=self._request_timeout,
-            # TODO: proxies=PROXIES,
+            proxies=PROXIES,
         )
 
     async def delete(self, url):
-        return await self._delete(
-            url,
-            timeout=self._request_timeout,
-            # TODO: proxies=PROXIES,
-        )
+        return await self._delete(url, timeout=self._request_timeout, proxies=PROXIES)
 
     def _process_error(self, error, query_id):
         error_type = error["errorType"]
@@ -429,9 +453,11 @@ class TrinoRequest(object):
         return exceptions.TrinoQueryError(error, query_id)
 
     def raise_response_error(self, http_response):
-        # type: (aiohttp.ClientResponse) -> None
         if http_response.status == 503:
             raise exceptions.Http503Error("error 503: service unavailable")
+
+        if http_response.status == 504:
+            raise exceptions.Http504Error("error 504: gateway timeout")
 
         raise exceptions.HttpError(
             "error {}{}".format(
@@ -440,25 +466,25 @@ class TrinoRequest(object):
             )
         )
 
-    async def process(self, http_response):
-        # type: (aiohttp.ClientResponse) -> TrinoStatus
+    async def process(self, http_response) -> TrinoStatus:
         if not http_response.ok:
             self.raise_response_error(http_response)
 
+        http_response.encoding = "utf-8"
         response = await http_response.json()
         logger.debug("HTTP %s: %s", http_response.status, response)
         if "error" in response:
             raise self._process_error(response["error"], response.get("id"))
 
-        if constants.HEADERS.CLEAR_SESSION in http_response.headers:
+        if constants.HEADER_CLEAR_SESSION in http_response.headers:
             for prop in get_header_values(
-                http_response.headers, constants.HEADERS.CLEAR_SESSION
+                http_response.headers, constants.HEADER_CLEAR_SESSION
             ):
                 self._client_session.properties.pop(prop, None)
 
-        if constants.HEADERS.SET_SESSION in http_response.headers:
+        if constants.HEADER_SET_SESSION in http_response.headers:
             for key, value in get_session_property_values(
-                http_response.headers, constants.HEADERS.SET_SESSION
+                http_response.headers, constants.HEADER_SET_SESSION
             ):
                 self._client_session.properties[key] = value
 
@@ -473,6 +499,20 @@ class TrinoRequest(object):
             rows=response.get("data", []),
             columns=response.get("columns"),
         )
+
+    def _verify_extra_credential(self, header):
+        """
+        Verifies that key has ASCII only and non-whitespace characters.
+        """
+        key = header[0]
+
+        if not _HEADER_EXTRA_CREDENTIAL_KEY_REGEX.match(key):
+            raise ValueError(f"whitespace or '=' are disallowed in extra credential '{key}'")
+
+        try:
+            key.encode().decode('ascii')
+        except UnicodeDecodeError:
+            raise ValueError(f"only ASCII characters are allowed in extra credential '{key}'")
 
 
 class TrinoResult(object):
@@ -489,8 +529,7 @@ class TrinoResult(object):
         self._rownumber = 0
 
     @property
-    def rownumber(self):
-        # type: () -> int
+    def rownumber(self) -> int:
         return self._rownumber
 
     def __aiter__(self):
@@ -520,16 +559,15 @@ class TrinoQuery(object):
 
     def __init__(
         self,
-        request,  # type: TrinoRequest
-        sql,  # type: Text
-    ):
-        # type: (...) -> None
-        self.query_id = None  # type: Optional[Text]
+        request: TrinoRequest,
+        sql: str,
+    ) -> None:
+        self.query_id: Optional[str] = None
 
-        self._stats = {}  # type: Dict[Any, Any]
-        self._warnings = []  # type: List[Dict[Any, Any]]
-        self._columns = None  # type: Optional[List[Text]]
-
+        self._stats: Dict[Any, Any] = {}
+        self._info_uri: Optional[str] = None
+        self._warnings: List[Dict[Any, Any]] = []
+        self._columns: Optional[List[str]] = None
         self._finished = False
         self._cancelled = False
         self._request = request
@@ -539,6 +577,11 @@ class TrinoQuery(object):
 
     @property
     def columns(self):
+        if self.query_id:
+            while not self._columns and not self.finished and not self.cancelled:
+                # Columns don't return immediate after query is summited.
+                # Continue fetching data until columns are available and push fetched rows into buffer.
+                self._result._rows += self.fetch()
         return self._columns
 
     @property
@@ -553,8 +596,11 @@ class TrinoQuery(object):
     def result(self):
         return self._result
 
-    async def execute(self, additional_http_headers=None):
-        # type: (...) -> TrinoResult
+    @property
+    def info_uri(self):
+        return self._info_uri
+
+    async def execute(self, additional_http_headers=None) -> TrinoResult:
         """Initiate a Trino query by sending the SQL statement
 
         This is the first HTTP request sent to the coordinator.
@@ -576,8 +622,7 @@ class TrinoQuery(object):
         self._result = TrinoResult(self, status.rows)
         return self._result
 
-    async def fetch(self):
-        # type: () -> List[List[Any]]
+    async def fetch(self) -> List[List[Any]]:
         """Continue fetching data for the current query_id"""
         response = await self._request.get(self._request.next_uri)
         status = await self._request.process(response)
@@ -590,8 +635,7 @@ class TrinoQuery(object):
             self._finished = True
         return status.rows
 
-    async def cancel(self):
-        # type: () -> None
+    async def cancel(self) -> None:
         """Cancel the current query"""
         if self.query_id is None or self.is_finished():
             return
@@ -606,9 +650,18 @@ class TrinoQuery(object):
             return
         self._request.raise_response_error(response)
 
-    def is_finished(self):
-        # type: () -> bool
+    def is_finished(self) -> bool:
+        import warnings
+        warnings.warn("is_finished is deprecated, use finished instead", DeprecationWarning)
+        return self.finished
+
+    @property
+    def finished(self) -> bool:
         return self._finished
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
 
     @property
     def response_headers(self):

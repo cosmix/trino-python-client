@@ -18,21 +18,53 @@ Fetch methods returns rows as a list of lists on purpose to let the caller
 decide to convert then to a list of tuples.
 """
 
+from typing import Any, List, Optional  # NOQA for mypy types
+
+import copy
+import uuid
 import datetime
 import math
-import uuid
-from typing import Any, List, Optional  # NOQA for mypy types
 
 import aiohttp
 
-import aiotrino.client
-import aiotrino.exceptions
-import aiotrino.logging
 from aiotrino import constants
-from aiotrino.transaction import NO_TRANSACTION, IsolationLevel, Transaction
-from aiotrino.utils import aiter, anext
+import aiotrino.exceptions
+import aiotrino.client
+import aiotrino.logging
+from aiotrino.transaction import Transaction, IsolationLevel, NO_TRANSACTION
+from aiotrino.exceptions import (
+    Warning,
+    Error,
+    InterfaceError,
+    DatabaseError,
+    DataError,
+    OperationalError,
+    IntegrityError,
+    InternalError,
+    ProgrammingError,
+    NotSupportedError,
+)
 
-__all__ = ["connect", "Connection", "Cursor"]
+__all__ = [
+    # https://www.python.org/dev/peps/pep-0249/#globals
+    "apilevel",
+    "threadsafety",
+    "paramstyle",
+    "connect",
+    "Connection",
+    "Cursor",
+    # https://www.python.org/dev/peps/pep-0249/#exceptions
+    "Warning",
+    "Error",
+    "InterfaceError",
+    "DatabaseError",
+    "DataError",
+    "OperationalError",
+    "IntegrityError",
+    "InternalError",
+    "ProgrammingError",
+    "NotSupportedError",
+]
 
 
 apilevel = "2.0"
@@ -72,11 +104,13 @@ class Connection(object):
         http_headers=None,
         http_scheme=constants.HTTP,
         auth=constants.DEFAULT_AUTH,
+        extra_credential=None,
         redirect_handler=None,
         max_attempts=constants.DEFAULT_MAX_ATTEMPTS,
         request_timeout=constants.DEFAULT_REQUEST_TIMEOUT,
         isolation_level=IsolationLevel.AUTOCOMMIT,
-        verify=True
+        verify=True,
+        http_session=None
     ):
         self.host = host
         self.port = port
@@ -86,10 +120,15 @@ class Connection(object):
         self.schema = schema
         self.session_properties = session_properties
         # mypy cannot follow module import
-        self._http_session = None
+        if http_session is None:
+            self._http_session = trino.client.TrinoRequest.http.Session()
+            self._http_session.verify = verify
+        else:
+            self._http_session = http_session
         self.http_headers = http_headers
         self.http_scheme = http_scheme
         self.auth = auth
+        self.extra_credential = extra_credential
         self.redirect_handler = redirect_handler
         self.max_attempts = max_attempts
         self.request_timeout = request_timeout
@@ -121,8 +160,7 @@ class Connection(object):
     async def close(self):
         """Trino does not have anything to close"""
         # TODO cancel outstanding queries?
-        if self._http_session and not self._http_session.closed:
-            await self._http_session.connector.close()
+        pass
 
     async def start_transaction(self):
         self._transaction = Transaction(self._create_request())
@@ -164,6 +202,7 @@ class Connection(object):
             NO_TRANSACTION,
             self.http_scheme,
             self.auth,
+            self.extra_credential,
             self.redirect_handler,
             self.max_attempts,
             self.request_timeout,
@@ -174,6 +213,8 @@ class Connection(object):
         if self.isolation_level != IsolationLevel.AUTOCOMMIT:
             if self.transaction is None:
                 await self.start_transaction()
+            request = self.transaction._request
+        elif self.transaction is not None:
             request = self.transaction._request
         else:
             request = self._create_request()
@@ -206,6 +247,12 @@ class Cursor(object):
     @property
     def connection(self):
         return self._connection
+
+    @property
+    def info_uri(self):
+        if self._query is not None:
+            return self._query.info_uri
+        return None
 
     @property
     def description(self):
@@ -278,10 +325,10 @@ class Cursor(object):
         async for _ in result:
             response_headers = result.response_headers
 
-            if constants.HEADERS.ADDED_PREPARE in response_headers:
-                return response_headers[constants.HEADERS.ADDED_PREPARE]
+            if constants.HEADER_ADDED_PREPARE in response_headers:
+                return response_headers[constants.HEADER_ADDED_PREPARE]
 
-        raise aiotrino.exceptions.FailedToObtainAddedPrepareHeader
+        raise trino.exceptions.FailedToObtainAddedPrepareHeader
 
     def _get_added_prepare_statement_trino_query(
         self,
@@ -336,7 +383,7 @@ class Cursor(object):
         if isinstance(param, dict):
             keys = list(param.keys())
             values = [param[key] for key in keys]
-            return "MAP(%s, %s)" % (
+            return "MAP({}, {})".format(
                 self._format_prepared_param(keys),
                 self._format_prepared_param(values)
             )
@@ -354,7 +401,7 @@ class Cursor(object):
         query = aiotrino.client.TrinoQuery(self._request.clone(), sql=sql)
         result = await query.execute(
             additional_http_headers={
-                constants.HEADERS.PREPARED_STATEMENT: added_prepare_header
+                constants.HEADER_PREPARED_STATEMENT: added_prepare_header
             }
         )
 
@@ -363,8 +410,8 @@ class Cursor(object):
         async for _ in result:
             response_headers = result.response_headers
 
-            if constants.HEADERS.DEALLOCATED_PREPARE in response_headers:
-                return response_headers[constants.HEADERS.DEALLOCATED_PREPARE]
+            if constants.HEADER_DEALLOCATED_PREPARE in response_headers:
+                return response_headers[constants.HEADER_DEALLOCATED_PREPARE]
 
         raise aiotrino.exceptions.FailedToObtainDeallocatedPrepareHeader
 
@@ -392,7 +439,7 @@ class Cursor(object):
                 )
                 result = await self._query.execute(
                     additional_http_headers={
-                        constants.HEADERS.PREPARED_STATEMENT: added_prepare_header
+                        constants.HEADER_PREPARED_STATEMENT: added_prepare_header
                     }
                 )
             finally:
@@ -410,8 +457,7 @@ class Cursor(object):
     def executemany(self, operation, seq_of_params):
         raise aiotrino.exceptions.NotSupportedError
 
-    async def fetchone(self):
-        # type: () -> Optional[List[Any]]
+    async def fetchone(self) -> Optional[List[Any]]:
         """
 
         PEP-0249: Fetch the next row of a query result set, returning a single
@@ -428,7 +474,7 @@ class Cursor(object):
         except aiotrino.exceptions.HttpError as err:
             raise aiotrino.exceptions.OperationalError(str(err))
 
-    async def fetchmany(self, size=None):
+    async def fetchmany(self, size=None) -> List[List[Any]]:
         # type: (Optional[int]) -> List[List[Any]]
         """
         PEP-0249: Fetch the next set of rows of a query result, returning a
@@ -465,7 +511,7 @@ class Cursor(object):
     def genall(self):
         return self._query.result
 
-    async def fetchall(self):
+    async def fetchall(self) -> List[List[Any]]:
         # type: () -> List[List[Any]]
         return [row async for row in self.genall()]
 
