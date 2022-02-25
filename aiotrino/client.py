@@ -45,7 +45,7 @@ import aiotrino.logging
 from aiotrino import constants, exceptions
 from aiotrino.transaction import NO_TRANSACTION
 
-__all__ = ["TrinoQuery", "TrinoRequest", "PROXIES"]
+__all__ = ["TrinoQuery", "TrinoRequest"]
 
 
 logger = aiotrino.logging.get_logger(__name__)
@@ -54,9 +54,7 @@ logger = aiotrino.logging.get_logger(__name__)
 MAX_ATTEMPTS = constants.DEFAULT_MAX_ATTEMPTS
 SOCKS_PROXY = os.environ.get("SOCKS_PROXY")
 if SOCKS_PROXY:
-    PROXIES = {"http": "socks5://" + SOCKS_PROXY, "https": "socks5://" + SOCKS_PROXY}
-else:
-    PROXIES = {}
+    raise RuntimeError("Socks5 support not implemented.")
 
 _HEADER_EXTRA_CREDENTIAL_KEY_REGEX = re.compile(r'^\S[^\s=]*$')
 
@@ -211,14 +209,14 @@ class TrinoRequest(object):
         host: str,
         port: int,
         user: str,
-        source: str = None,
-        catalog: str = None,
-        schema: str = None,
+        source: Optional[str] = None,
+        catalog: Optional[str] = None,
+        schema: Optional[str] = None,
         session_properties: Optional[Dict[str, Any]] = None,
         http_session: Any = None,
         http_headers: Optional[Dict[str, str]] = None,
         transaction_id: Optional[str] = NO_TRANSACTION,
-        http_scheme: str = None,
+        http_scheme: Optional[str] = None,
         auth: Optional[Any] = constants.DEFAULT_AUTH,
         extra_credential: Optional[List[Tuple[str, str]]] = None,
         redirect_handler: Any = None,
@@ -414,8 +412,7 @@ class TrinoRequest(object):
             data=data,
             headers=http_headers,
             timeout=self._request_timeout,
-            allow_redirects=self._redirect_handler is None,
-            proxies=PROXIES,
+            allow_redirects=self._redirect_handler is None
         )
         if self._redirect_handler is not None:
             while http_response is not None and is_redirect(http_response):
@@ -427,8 +424,7 @@ class TrinoRequest(object):
                     data=data,
                     headers=http_headers,
                     timeout=self._request_timeout,
-                    allow_redirects=False,
-                    proxies=PROXIES,
+                    allow_redirects=False
                 )
         return http_response
 
@@ -437,11 +433,10 @@ class TrinoRequest(object):
             url,
             headers=self.http_headers,
             timeout=self._request_timeout,
-            proxies=PROXIES,
         )
 
     async def delete(self, url):
-        return await self._delete(url, timeout=self._request_timeout, proxies=PROXIES)
+        return await self._delete(url, timeout=self._request_timeout,)
 
     def _process_error(self, error, query_id):
         error_type = error["errorType"]

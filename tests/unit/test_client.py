@@ -24,8 +24,6 @@ from yarl import URL
 import aiotrino.exceptions
 # from requests_kerberos.exceptions import KerberosExchangeError
 from aiotrino import constants
-# from aiotrino.auth import KerberosAuthentication
-# from aiotrino.client import PROXIES, TrinoQuery, TrinoRequest, TrinoResult
 from aiotrino.client import TrinoQuery, TrinoRequest, TrinoResult
 
 MOCK_URL = URL('http://mock')
@@ -305,15 +303,15 @@ async def test_request_headers(monkeypatch):
     source = "test_source"
     accept_encoding_header = "accept-encoding"
     accept_encoding_value = "identity,deflate,gzip"
-    client_info_header = constants.HEADERS.CLIENT_INFO
+    client_info_header = constants.HEADER_CLIENT_INFO
     client_info_value = "some_client_info"
 
     def assert_headers(headers):
-        assert headers[constants.HEADERS.CATALOG] == catalog
-        assert headers[constants.HEADERS.SCHEMA] == schema
-        assert headers[constants.HEADERS.SOURCE] == source
-        assert headers[constants.HEADERS.USER] == user
-        assert headers[constants.HEADERS.SESSION] == ""
+        assert headers[constants.HEADER_CATALOG] == catalog
+        assert headers[constants.HEADER_SCHEMA] == schema
+        assert headers[constants.HEADER_SOURCE] == source
+        assert headers[constants.HEADER_USER] == user
+        assert headers[constants.HEADER_SESSION] == ""
         assert headers[accept_encoding_header] == accept_encoding_value
         assert headers[client_info_header] == client_info_value
         assert len(headers.keys()) == 8
@@ -382,7 +380,7 @@ async def test_request_invalid_http_headers():
             host="coordinator",
             port=8080,
             user="test",
-            http_headers={constants.HEADERS.USER: "invalid_header"},
+            http_headers={constants.HEADER_USER: "invalid_header"},
         ):
             pass
     assert str(value_error.value).startswith("cannot override reserved HTTP header")
@@ -682,7 +680,7 @@ async def test_trino_query_response_headers(aiohttp_client):
 
         sql = 'execute my_stament using 1, 2, 3'
         additional_headers = {
-            constants.HEADERS.PREPARED_STATEMENT: 'my_statement=added_prepare_statement_header'
+            constants.HEADER_PREPARED_STATEMENT: 'my_statement=added_prepare_statement_header'
         }
 
         query = TrinoQuery(

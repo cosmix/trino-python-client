@@ -18,7 +18,6 @@ import time
 from contextlib import closing
 from uuid import uuid4
 
-import click
 import pytest
 
 import aiotrino.logging
@@ -29,7 +28,7 @@ from aiotrino.exceptions import TimeoutError
 logger = aiotrino.logging.get_logger(__name__)
 
 
-TRINO_VERSION = os.environ.get("TRINO_VERSION") or "351"
+TRINO_VERSION = os.environ.get("TRINO_VERSION") or "370"
 TRINO_HOST = "127.0.0.1"
 TRINO_PORT = 8080
 
@@ -162,67 +161,67 @@ async def run_trino():
         stop_trino(container_id, proc)
 
 
-@click.group()
-def cli():
-    pass
+# @click.group()
+# def cli():
+#     pass
 
 
-@click.option(
-    "--cache/--no-cache", default=True, help="enable/disable Docker build cache"
-)
-@click.command()
-async def trino_server():
-    container_id, _, _, _ = await start_trino_and_wait()
+# @click.option(
+#     "--cache/--no-cache", default=True, help="enable/disable Docker build cache"
+# )
+# @click.command()
+# async def trino_server():
+#     container_id, _, _, _ = await start_trino_and_wait()
 
 
-@click.argument("container_id", required=False)
-@click.command()
-def trino_cli(container_id=None):
-    if not container_id:
-        container_id = os.environ.get("TRINO_CONTAINER")
-        if not container_id:
-            raise ValueError("no container specified")
-    subprocess.call(
-        [
-            "docker",
-            "exec",
-            "-t",
-            "-i",
-            container_id,
-            "bin/trino-cli",
-            "--server",
-            "localhost:8080",
-        ]
-    )
+# @click.argument("container_id", required=False)
+# @click.command()
+# def trino_cli(container_id=None):
+#     if not container_id:
+#         container_id = os.environ.get("TRINO_CONTAINER")
+#         if not container_id:
+#             raise ValueError("no container specified")
+#     subprocess.call(
+#         [
+#             "docker",
+#             "exec",
+#             "-t",
+#             "-i",
+#             container_id,
+#             "bin/trino-cli",
+#             "--server",
+#             "localhost:8080",
+#         ]
+#     )
 
 
-@cli.command("list")
-def list_():
-    subprocess.check_call(
-        ["docker", "ps", "--filter", "name=trino-python-client-tests-"]
-    )
+# @cli.command("list")
+# def list_():
+#     subprocess.check_call(
+#         ["docker", "ps", "--filter", "name=trino-python-client-tests-"]
+#     )
 
 
-@cli.command()
-def clean():
-    cmd = (
-        "docker ps "
-        "--filter name=trino-python-client-tests- "
-        "--format={{.Names}} | "
-        "xargs -n 1 docker kill"  # NOQA deliberate additional indent
-    )
-    subprocess.check_output(cmd, shell=True)
+# @cli.command()
+# def clean():
+#     cmd = (
+#         "docker ps "
+#         "--filter name=trino-python-client-tests- "
+#         "--format={{.Names}} | "
+#         "xargs -n 1 docker kill"  # NOQA deliberate additional indent
+#     )
+#     subprocess.check_output(cmd, shell=True)
 
 
-@cli.command()
-def tests():
-    subprocess.check_call(["./tests_unit"])
-    subprocess.check_call(["./tests_integration"])
+# @cli.command()
+# def tests():
+#     subprocess.check_call(["./tests_unit"])
+#     # subprocess.check_call(["./tests_integration"])
 
 
-cli.add_command(trino_server)
-cli.add_command(trino_cli)
+# cli.add_command(trino_server)
+# cli.add_command(trino_cli)
 
 
-if __name__ == "__main__":
-    cli()
+# if __name__ == "__main__":
+#     cli()

@@ -15,7 +15,7 @@ from datetime import datetime
 import pytest
 import pytz
 # Need to specify the fixture for it to load properly
-from fixtures import TRINO_VERSION, run_trino
+from tests.integration.conftest import TRINO_VERSION
 
 import aiotrino
 from aiotrino.exceptions import TrinoQueryError
@@ -402,7 +402,19 @@ async def test_invalid_query_throws_correct_error(trino_connection: aiotrino.dba
     with pytest.raises(TrinoQueryError):
         await cur.execute(
             """
-            select * FRMO foo WHERE x = ?;
+            SELECT * FRMO foo WHERE x = ?;
             """,
             params=(3,),
         )
+
+
+@pytest.mark.asyncio
+async def test_info_uri(trino_connection: aiotrino.dbapi.Connection):
+    cur = await trino_connection.cursor()
+    assert cur.info_uri is None
+    await cur.execute('SELECT * FROM system.runtime.nodes')
+    assert cur.info_uri is not None
+    assert cur._query.query_id in cur.info_uri
+    await cur.fetchall()
+    assert cur.info_uri is not None
+    assert cur._query.query_id in cur.info_uri

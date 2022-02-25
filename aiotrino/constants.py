@@ -26,6 +26,7 @@ HTTPS = "https"
 
 URL_STATEMENT_PATH = "/v1/statement"
 
+
 HEADER_CATALOG = "X-Trino-Catalog"
 HEADER_SCHEMA = "X-Trino-Schema"
 HEADER_SOURCE = "X-Trino-Source"

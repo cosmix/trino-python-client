@@ -1,9 +1,4 @@
 {
-  "python.pythonPath": "c:\\Users\\maste\\.pyenv\\pyenv-win\\versions\\3.7.7\\python.exe",
-  "python.testing.pytestArgs": [
-    "-W",
-    "ignore",
-    "-vv",
-    "tests",
-  ],
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestEnabled": true
 }

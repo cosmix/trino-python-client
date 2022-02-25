@@ -20,7 +20,6 @@ decide to convert then to a list of tuples.
 
 from typing import Any, List, Optional  # NOQA for mypy types
 
-import copy
 import uuid
 import datetime
 import math
@@ -28,6 +27,7 @@ import math
 import aiohttp
 
 from aiotrino import constants
+from aiotrino.utils import aiter, anext
 import aiotrino.exceptions
 import aiotrino.client
 import aiotrino.logging
@@ -121,7 +121,7 @@ class Connection(object):
         self.session_properties = session_properties
         # mypy cannot follow module import
         if http_session is None:
-            self._http_session = trino.client.TrinoRequest.http.Session()
+            self._http_session = aiotrino.client.TrinoRequest.http.ClientSession()
             self._http_session.verify = verify
         else:
             self._http_session = http_session
@@ -182,7 +182,7 @@ class Connection(object):
         self._transaction = None
 
     def _create_request(self):
-        # Creating session here because aiohttp requires it to be created inside the event loop. 
+        # Creating session here because aiohttp requires it to be created inside the event loop.
         # The Connection only calls this from async functions so therefore it will be in event loop
         if self._http_session is None:
             self._http_session = aiohttp.ClientSession(
