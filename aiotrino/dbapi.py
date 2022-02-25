@@ -254,15 +254,14 @@ class Cursor(object):
             return self._query.info_uri
         return None
 
-    @property
-    def description(self):
-        if self._query.columns is None:
+    async def description(self):
+        if await self._query.columns() is None:
             return None
 
         # [ (name, type_code, display_size, internal_size, precision, scale, null_ok) ]
         return [
             (col["name"], col["type"], None, None, None, None, None)
-            for col in self._query.columns
+            for col in await self._query.columns()
         ]
 
     @property

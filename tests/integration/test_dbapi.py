@@ -18,7 +18,7 @@ import pytz
 from tests.integration.conftest import TRINO_VERSION
 
 import aiotrino
-from aiotrino.exceptions import TrinoQueryError
+from aiotrino.exceptions import TrinoQueryError, TrinoUserError
 from aiotrino.transaction import IsolationLevel
 
 
@@ -42,6 +42,20 @@ def trino_connection_with_transaction(run_trino):
         source="test",
         max_attempts=1,
         isolation_level=IsolationLevel.READ_UNCOMMITTED,
+    )
+
+
+@pytest.fixture
+def trino_connection_in_autocommit(run_trino):
+    _, host, port = run_trino
+
+    yield aiotrino.dbapi.Connection(
+        host=host,
+        port=port,
+        user="test",
+        source="test",
+        max_attempts=1,
+        isolation_level=IsolationLevel.AUTOCOMMIT,
     )
 
 
@@ -131,7 +145,7 @@ async def test_datetime_query_param(trino_connection: aiotrino.dbapi.Connection)
     rows = await cur.fetchall()
 
     assert rows[0][0] == "2020-01-01 00:00:00.000 UTC"
-    assert cur.description[0][1] == "timestamp with time zone"
+    assert (await cur.description())[0][1] == "timestamp with time zone"
 
 
 @pytest.mark.asyncio
@@ -193,7 +207,7 @@ async def test_float_query_param(trino_connection: aiotrino.dbapi.Connection):
     await cur.execute("SELECT ?", params=(1.1,))
     rows = await cur.fetchall()
 
-    assert cur.description[0][1] == "double"
+    assert (await cur.description())[0][1] == "double"
     assert rows[0][0] == 1.1
 
 
@@ -204,7 +218,7 @@ async def test_float_nan_query_param(trino_connection: aiotrino.dbapi.Connection
     await cur.execute("SELECT ?", params=(float("nan"),))
     rows = await cur.fetchall()
 
-    assert cur.description[0][1] == "double"
+    assert (await cur.description())[0][1] == "double"
     assert isinstance(rows[0][0], float)
     assert math.isnan(rows[0][0])
 
@@ -231,13 +245,13 @@ async def test_int_query_param(trino_connection: aiotrino.dbapi.Connection):
     rows = await cur.fetchall()
 
     assert rows[0][0] == 3
-    assert cur.description[0][1] == "integer"
+    assert (await cur.description())[0][1] == "integer"
 
     await cur.execute("SELECT ?", params=(9223372036854775807,))
     rows = await cur.fetchall()
 
     assert rows[0][0] == 9223372036854775807
-    assert cur.description[0][1] == "bigint"
+    assert (await cur.description())[0][1] == "bigint"
 
 
 @pytest.mark.parametrize('params', [
@@ -356,6 +370,25 @@ async def test_session_properties(run_trino):
             assert value == "1"
 
 
+@pytest.mark.skipif(TRINO_VERSION == '351', reason="Autocommit behaves "
+                    "differently in older Trino versions")
+@pytest.mark.asyncio
+async def test_transaction_autocommit(trino_connection_in_autocommit: aiotrino.dbapi.Connection):
+    async with trino_connection_in_autocommit as connection:
+        await connection.start_transaction()
+        cur = await connection.cursor()
+        await cur.execute(
+            """
+            CREATE TABLE memory.default.nation
+            AS SELECT * from tpch.tiny.nation
+            """)
+
+        with pytest.raises(TrinoUserError) as transaction_error:
+            await cur.fetchall()
+        assert "Catalog only supports writes using autocommit: memory" \
+               in str(transaction_error.value)
+
+
 @pytest.mark.asyncio
 async def test_transaction_single(trino_connection_with_transaction: aiotrino.dbapi.Connection):
     connection = trino_connection_with_transaction
@@ -406,6 +439,30 @@ async def test_invalid_query_throws_correct_error(trino_connection: aiotrino.dba
             """,
             params=(3,),
         )
+
+
+@pytest.mark.asyncio
+async def test_eager_loading_cursor_description(trino_connection):
+    description_expected = [
+        ('node_id', 'varchar', None, None, None, None, None),
+        ('http_uri', 'varchar', None, None, None, None, None),
+        ('node_version', 'varchar', None, None, None, None, None),
+        ('coordinator', 'boolean', None, None, None, None, None),
+        ('state', 'varchar', None, None, None, None, None),
+    ]
+    cur = await trino_connection.cursor()
+    await cur.execute('SELECT * FROM system.runtime.nodes')
+    description_before = await cur.description()
+
+    assert description_before is not None
+    assert len(description_before) == len(description_expected)
+    assert all([b == e] for b, e in zip(description_before, description_expected))
+
+    await cur.fetchone()
+    description_after = await cur.description()
+    assert description_after is not None
+    assert len(description_after) == len(description_expected)
+    assert all([a == e] for a, e in zip(description_after, description_expected))
 
 
 @pytest.mark.asyncio

@@ -570,13 +570,12 @@ class TrinoQuery(object):
         self._result = TrinoResult(self)
         self._response_headers = None
 
-    @property
-    def columns(self):
+    async def columns(self):
         if self.query_id:
             while not self._columns and not self.finished and not self.cancelled:
                 # Columns don't return immediate after query is summited.
                 # Continue fetching data until columns are available and push fetched rows into buffer.
-                self._result._rows += self.fetch()
+                self._result._rows += await self.fetch()
         return self._columns
 
     @property
@@ -608,22 +607,26 @@ class TrinoQuery(object):
 
         response = await self._request.post(self._sql, additional_http_headers)
         status = await self._request.process(response)
+        self._info_uri = status.info_uri
         self.query_id = status.id
         self._stats.update({u"queryId": self.query_id})
-        self._stats.update(status.stats)
+        self._update_state(status)
         self._warnings = getattr(status, "warnings", [])
         if status.next_uri is None:
             self._finished = True
         self._result = TrinoResult(self, status.rows)
         return self._result
 
+    def _update_state(self, status):
+        self._stats.update(status.stats)
+        if status.columns:
+            self._columns = status.columns
+
     async def fetch(self) -> List[List[Any]]:
         """Continue fetching data for the current query_id"""
         response = await self._request.get(self._request.next_uri)
         status = await self._request.process(response)
-        if status.columns:
-            self._columns = status.columns
-        self._stats.update(status.stats)
+        self._update_state(status)
         logger.debug(status)
         self._response_headers = response.headers
         if status.next_uri is None:
