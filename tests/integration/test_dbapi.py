@@ -67,7 +67,7 @@ async def test_select_query(trino_connection: aiotrino.dbapi.Connection):
     assert len(rows) > 0
     row = rows[0]
     assert row[2] == TRINO_VERSION
-    columns = dict([desc[:2] for desc in cur.description])
+    columns = dict([desc[:2] for desc in (await cur.description())])
     assert columns["node_id"] == "varchar"
     assert columns["http_uri"] == "varchar"
     assert columns["node_version"] == "varchar"
