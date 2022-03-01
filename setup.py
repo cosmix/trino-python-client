@@ -31,7 +31,7 @@ kerberos_require = ["requests_kerberos"]
 
 all_require = [kerberos_require]
 
-tests_require = all_require + ["pytest", "pytest-aiohttp", "pytest-asyncio", "pytest-runner", "aioresponses", "click", "mock", "pytz"]
+tests_require = all_require + ["pytest", "pytest-aiohttp", "pytest-asyncio", "pytest-runner", "aioresponses", "mock", "pytz"]
 
 setup(
     name="aiotrino",
